@@ -133,28 +133,51 @@ const commands = [
   new SlashCommandBuilder()
     .setName("add")
     .setDescription("Track a Roblox user")
-    .addUserOption(o => o.setName("user").setRequired(true))
-    .addStringOption(o => o.setName("username").setRequired(true)),
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("Discord user to track")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("username")
+        .setDescription("Roblox username")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
-    .addUserOption(o => o.setName("user").setRequired(true)),
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("Discord user to remove")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("stats")
-    .setDescription("Show stats")
-    .addUserOption(o => o.setName("user")),
+    .setDescription("Show tracked stats")
+    .addUserOption(o =>
+      o.setName("user")
+        .setDescription("Discord user (optional)")
+    ),
 
   new SlashCommandBuilder()
     .setName("setresults")
     .setDescription("Set daily results channel")
-    .addChannelOption(o => o.setName("channel").setRequired(true)),
+    .addChannelOption(o =>
+      o.setName("channel")
+        .setDescription("Channel for daily report")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("username")
     .setDescription("Lookup Roblox user")
-    .addStringOption(o => o.setName("username").setRequired(true))
+    .addStringOption(o =>
+      o.setName("username")
+        .setDescription("Roblox username to lookup")
+        .setRequired(true)
+    )
 ].map(c => c.toJSON());
 
 // ===================== REGISTER =====================
