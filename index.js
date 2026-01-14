@@ -10,7 +10,18 @@ const {
   ActivityType
 } = require("discord.js");
 const fs = require("fs");
+// ================== FAKE WEB SERVER (RENDER) ==================
+const express = require("express");
+const app = express();
 
+app.get("/", (req, res) => {
+  res.send("Bot is alive ✅");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🌐 Web server running on port ${PORT}`);
+});
 // ================== CONFIG ==================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
