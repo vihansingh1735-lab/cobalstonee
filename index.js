@@ -1,12 +1,12 @@
 // ===================== IMPORTS =====================
-const { 
-  Client, 
-  GatewayIntentBits, 
-  SlashCommandBuilder, 
-  REST, 
-  Routes, 
-  EmbedBuilder, 
-  ActivityType 
+const {
+  Client,
+  GatewayIntentBits,
+  SlashCommandBuilder,
+  REST,
+  Routes,
+  EmbedBuilder,
+  ActivityType
 } = require("discord.js");
 
 const mongoose = require("mongoose");
@@ -16,9 +16,9 @@ const fetch = require("node-fetch");
 // ===================== CONFIG =====================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+const MONGO_URI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 3000;
 
-// ROLE allowed to use /username
 const USERNAME_ROLE_ID = "1460937724142813344";
 
 // ===================== FAKE WEB SERVER =====================
@@ -27,11 +27,11 @@ app.get("/", (_, res) => res.send("Bot alive"));
 app.listen(PORT, () => console.log(`🌐 Web running on ${PORT}`));
 
 // ===================== MONGODB =====================
-mongoose.connect(process.env.MONGO_URI, {
+mongoose.connect(MONGO_URI, {
   dbName: "opsbot"
 }).then(() => console.log("✅ MongoDB connected"))
 .catch(err => {
-  console.error("❌ MongoDB failed", err);
+  console.error("❌ MongoDB error", err);
   process.exit(1);
 });
 
@@ -39,12 +39,18 @@ mongoose.connect(process.env.MONGO_URI, {
 const userSchema = new mongoose.Schema({
   guildId: String,
   discordId: String,
+
   robloxId: Number,
   robloxUsername: String,
+
+  totalMinutes: { type: Number, default: 0 },
+  lastRewardedMinutes: { type: Number, default: 0 },
+
   op: { type: Number, default: 0 },
   todayCount: { type: Number, default: 0 },
   lastDay: String,
-  joinedAt: Date
+
+  lastJoin: Date
 });
 
 const settingsSchema = new mongoose.Schema({
@@ -59,9 +65,15 @@ const Settings = mongoose.model("Settings", settingsSchema);
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences
   ]
 });
+
+// ===================== HELPERS =====================
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 // ===================== ROBLOX API =====================
 async function getRobloxUser(username) {
@@ -73,16 +85,34 @@ async function getRobloxUser(username) {
       excludeBannedUsers: false
     })
   });
+
   const data = await res.json();
   return data.data?.[0] || null;
 }
 
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
-}
+// ===================== TRACK JOIN =====================
+client.on("presenceUpdate", async (_, presence) => {
+  if (!presence || !presence.userId || !presence.guild) return;
 
-// ===================== POINT SYSTEM =====================
-async function givePoints() {
+  const playing = presence.activities.some(a => a.type === 0);
+  const user = await User.findOne({ guildId: presence.guild.id, discordId: presence.userId });
+  if (!user) return;
+
+  if (playing && !user.lastJoin) {
+    user.lastJoin = new Date();
+    await user.save();
+  }
+
+  if (!playing && user.lastJoin) {
+    const minutes = Math.floor((Date.now() - user.lastJoin) / 60000);
+    user.totalMinutes += minutes;
+    user.lastJoin = null;
+    await user.save();
+  }
+});
+
+// ===================== OP REWARD SYSTEM =====================
+async function rewardOP() {
   const today = todayKey();
   const users = await User.find();
 
@@ -92,19 +122,23 @@ async function givePoints() {
       u.lastDay = today;
     }
 
-    if (u.todayCount < 50) {
-      u.op += 1;
-      u.todayCount += 1;
+    const newMinutes = u.totalMinutes - u.lastRewardedMinutes;
+    const earnedOP = Math.floor(newMinutes / 10);
+
+    if (earnedOP > 0 && u.todayCount < 50) {
+      const allowed = Math.min(earnedOP, 50 - u.todayCount);
+      u.op += allowed;
+      u.todayCount += allowed;
+      u.lastRewardedMinutes += allowed * 10;
       await u.save();
     }
   }
 }
 
-setInterval(givePoints, 10 * 60 * 1000);
+setInterval(rewardOP, 60 * 1000);
 
 // ===================== DAILY REPORT =====================
 async function sendDailyResults() {
-  const today = todayKey();
   const guilds = await Settings.find();
 
   for (const g of guilds) {
@@ -134,50 +168,33 @@ const commands = [
     .setName("add")
     .setDescription("Track a Roblox user")
     .addUserOption(o =>
-      o.setName("user")
-        .setDescription("Discord user to track")
-        .setRequired(true)
-    )
+      o.setName("user").setDescription("Discord user").setRequired(true))
     .addStringOption(o =>
-      o.setName("username")
-        .setDescription("Roblox username")
-        .setRequired(true)
-    ),
+      o.setName("username").setDescription("Roblox username").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
     .addUserOption(o =>
-      o.setName("user")
-        .setDescription("Discord user to remove")
-        .setRequired(true)
-    ),
+      o.setName("user").setDescription("Discord user").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("stats")
-    .setDescription("Show tracked stats")
+    .setDescription("Show OP stats")
     .addUserOption(o =>
-      o.setName("user")
-        .setDescription("Discord user (optional)")
-    ),
+      o.setName("user").setDescription("Target user")),
 
   new SlashCommandBuilder()
     .setName("setresults")
     .setDescription("Set daily results channel")
     .addChannelOption(o =>
-      o.setName("channel")
-        .setDescription("Channel for daily report")
-        .setRequired(true)
-    ),
+      o.setName("channel").setDescription("Channel").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("username")
     .setDescription("Lookup Roblox user")
     .addStringOption(o =>
-      o.setName("username")
-        .setDescription("Roblox username to lookup")
-        .setRequired(true)
-    )
+      o.setName("username").setDescription("Roblox username").setRequired(true))
 ].map(c => c.toJSON());
 
 // ===================== REGISTER =====================
@@ -202,6 +219,7 @@ client.on("interactionCreate", async i => {
   if (i.commandName === "add") {
     const user = i.options.getUser("user");
     const name = i.options.getString("username");
+
     const rbx = await getRobloxUser(name);
     if (!rbx) return i.reply({ content: "Roblox user not found", ephemeral: true });
 
@@ -212,7 +230,6 @@ client.on("interactionCreate", async i => {
         discordId: user.id,
         robloxId: rbx.id,
         robloxUsername: rbx.name,
-        joinedAt: new Date(),
         lastDay: todayKey()
       },
       { upsert: true }
