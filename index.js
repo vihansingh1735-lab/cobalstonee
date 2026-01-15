@@ -29,7 +29,8 @@ app.listen(PORT, () => console.log(`🌐 Web running on ${PORT}`));
 // ===================== MONGODB =====================
 mongoose.connect(MONGO_URI, {
   dbName: "opsbot"
-}).then(() => console.log("✅ MongoDB connected"))
+})
+.then(() => console.log("✅ MongoDB connected"))
 .catch(err => {
   console.error("❌ MongoDB error", err);
   process.exit(1);
@@ -43,14 +44,15 @@ const userSchema = new mongoose.Schema({
   robloxId: Number,
   robloxUsername: String,
 
+  // 🔥 TIME TRACKING
+  sessionStart: Date,
   totalMinutes: { type: Number, default: 0 },
-  lastRewardedMinutes: { type: Number, default: 0 },
+  rewardedMinutes: { type: Number, default: 0 },
 
+  // 🔥 OP SYSTEM
   op: { type: Number, default: 0 },
   todayCount: { type: Number, default: 0 },
-  lastDay: String,
-
-  lastJoin: Date
+  lastDay: String
 });
 
 const settingsSchema = new mongoose.Schema({
@@ -65,8 +67,8 @@ const Settings = mongoose.model("Settings", settingsSchema);
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildPresences
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildMembers
   ]
 });
 
@@ -90,23 +92,35 @@ async function getRobloxUser(username) {
   return data.data?.[0] || null;
 }
 
-// ===================== TRACK JOIN =====================
+// ===================== PRESENCE TRACKING =====================
 client.on("presenceUpdate", async (_, presence) => {
-  if (!presence || !presence.userId || !presence.guild) return;
+  if (!presence?.guild || !presence.userId) return;
 
   const playing = presence.activities.some(a => a.type === 0);
-  const user = await User.findOne({ guildId: presence.guild.id, discordId: presence.userId });
+  const user = await User.findOne({
+    guildId: presence.guild.id,
+    discordId: presence.userId
+  });
+
   if (!user) return;
 
-  if (playing && !user.lastJoin) {
-    user.lastJoin = new Date();
+  // 🟢 START SESSION
+  if (playing && !user.sessionStart) {
+    user.sessionStart = new Date();
     await user.save();
   }
 
-  if (!playing && user.lastJoin) {
-    const minutes = Math.floor((Date.now() - user.lastJoin) / 60000);
-    user.totalMinutes += minutes;
-    user.lastJoin = null;
+  // 🔴 END SESSION
+  if (!playing && user.sessionStart) {
+    const minutes = Math.floor(
+      (Date.now() - user.sessionStart.getTime()) / 60000
+    );
+
+    if (minutes > 0) {
+      user.totalMinutes += minutes;
+    }
+
+    user.sessionStart = null;
     await user.save();
   }
 });
@@ -117,24 +131,31 @@ async function rewardOP() {
   const users = await User.find();
 
   for (const u of users) {
+    // Reset daily limit
     if (u.lastDay !== today) {
       u.todayCount = 0;
       u.lastDay = today;
     }
 
-    const newMinutes = u.totalMinutes - u.lastRewardedMinutes;
-    const earnedOP = Math.floor(newMinutes / 10);
+    // Calculate new playable minutes
+    const newMinutes = u.totalMinutes - u.rewardedMinutes;
+    if (newMinutes < 10) continue;
 
-    if (earnedOP > 0 && u.todayCount < 50) {
-      const allowed = Math.min(earnedOP, 50 - u.todayCount);
-      u.op += allowed;
-      u.todayCount += allowed;
-      u.lastRewardedMinutes += allowed * 10;
-      await u.save();
-    }
+    const possibleOP = Math.floor(newMinutes / 10);
+    if (possibleOP <= 0) continue;
+
+    const allowedOP = Math.min(possibleOP, 50 - u.todayCount);
+    if (allowedOP <= 0) continue;
+
+    u.op += allowedOP;
+    u.todayCount += allowedOP;
+    u.rewardedMinutes += allowedOP * 10;
+
+    await u.save();
   }
 }
 
+// ⏱ Check every minute (SAFE)
 setInterval(rewardOP, 60 * 1000);
 
 // ===================== DAILY REPORT =====================
@@ -160,6 +181,7 @@ async function sendDailyResults() {
   }
 }
 
+// 🕛 Daily
 setInterval(sendDailyResults, 24 * 60 * 60 * 1000);
 
 // ===================== COMMANDS =====================
@@ -252,7 +274,9 @@ client.on("interactionCreate", async i => {
     const embed = new EmbedBuilder()
       .setTitle(data.robloxUsername)
       .setURL(`https://www.roblox.com/users/${data.robloxId}/profile`)
-      .setDescription(`Total OP: **${data.op}**\nToday: **${data.todayCount}/50**`)
+      .setDescription(
+        `Total OP: **${data.op}**\nToday: **${data.todayCount}/50**`
+      )
       .setColor(0x3498db);
 
     i.reply({ embeds: [embed] });
