@@ -183,23 +183,44 @@ const commands = [
   new SlashCommandBuilder()
     .setName("add")
     .setDescription("Track a Roblox user")
-    .addUserOption(o => o.setName("user").setRequired(true))
-    .addStringOption(o => o.setName("username").setRequired(true)),
+    .addUserOption(o =>
+      o
+        .setName("user")
+        .setDescription("Discord user to track")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("username")
+        .setDescription("Roblox username")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
-    .addUserOption(o => o.setName("user").setRequired(true)),
+    .addUserOption(o =>
+      o
+        .setName("user")
+        .setDescription("Discord user to remove")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("Show OP stats")
-    .addUserOption(o => o.setName("user")),
+    .addUserOption(o =>
+      o
+        .setName("user")
+        .setDescription("User to view stats (optional)")
+        .setRequired(false)
+    ),
 
   new SlashCommandBuilder()
     .setName("leaderboard")
-    .setDescription("OP leaderboard")
-].map(c => c.toJSON());
+    .setDescription("OP leaderboard"),
+
+].map(cmd => cmd.toJSON());
 
 // ================== REGISTER ==================
 const rest = new REST({ version: "10" }).setToken(TOKEN);
