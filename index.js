@@ -162,7 +162,6 @@ async function checkUsers() {
   save();
       }
     }
-  }
 }
 
 // ================== COMMANDS ==================
