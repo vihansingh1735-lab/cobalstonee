@@ -117,10 +117,11 @@ async function checkUsers() {
 
       // ================= JOIN =================
       if (presence?.userPresenceType === 2 && u.state !== "ingame") {
-        u.state = "ingame";
-        u.join = now;
-        u.game = presence.lastLocation || "Roblox";
-        save();
+  u.state = "ingame";
+  u.join = Date.now();
+  u.game = presence.lastLocation || "Roblox";
+  save();
+      }
 
         channel.send({
           embeds: [
@@ -137,42 +138,28 @@ async function checkUsers() {
 
       // ================= LEAVE =================
       if (u.state === "ingame" && (!presence || presence.userPresenceType !== 2)) {
-        const playedSeconds = Math.floor((now - u.join) / 1000);
+  const playedSeconds = Math.floor((Date.now() - u.join) / 1000);
 
-        // add time
-        u.stats.daily += playedSeconds;
-        u.stats.weekly += playedSeconds;
-        u.stats.total += playedSeconds;
+  // time stats
+  u.stats.daily += playedSeconds;
+  u.stats.weekly += playedSeconds;
+  u.stats.total += playedSeconds;
 
-        // OP SYSTEM (SAFE)
-        u.op.unusedSeconds += playedSeconds;
-        let earned = Math.floor(u.op.unusedSeconds / 600);
-        const allowed = Math.min(earned, 50 - u.op.today);
+  // OP SYSTEM (CORRECT & SAFE)
+  u.op.unusedSeconds += playedSeconds;
+  const earned = Math.floor(u.op.unusedSeconds / 600); // 10 min = 1 OP
+  const allowed = Math.min(earned, 50 - u.op.today);
 
-        if (allowed > 0) {
-          u.op.total += allowed;
-          u.op.today += allowed;
-          u.op.unusedSeconds -= allowed * 600;
-        }
+  if (allowed > 0) {
+    u.op.total += allowed;
+    u.op.today += allowed;
+    u.op.unusedSeconds -= allowed * 600;
+  }
 
-        u.state = "offline";
-        u.join = null;
-        u.game = null;
-        save();
-
-        channel.send({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(0xe74c3c)
-              .setTitle(u.displayName)
-              .setURL(`https://www.roblox.com/users/${u.robloxId}/profile`)
-              .setThumbnail(await getAvatar(u.robloxId))
-              .setDescription(
-                `🔴 **Left Game**\n⏱ ${fmt(playedSeconds)}\n\n🪙 **Total OP:** ${u.op.total}\n📅 **Today:** ${u.op.today}/50`
-              )
-              .setTimestamp()
-          ]
-        });
+  u.state = "offline";
+  u.join = null;
+  u.game = null;
+  save();
       }
     }
   }
