@@ -21,8 +21,15 @@ const fetch = require("node-fetch");
 // ================== CONFIG ==================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+
 const CHECK_INTERVAL = 30_000;
 const DB_FILE = "./data.json";
+
+// ================== TIME (IST) ==================
+const istNow = () =>
+  new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+
+const dayKey = () => istNow().toISOString().slice(0, 10);
 
 // ================== DATABASE ==================
 let db = { guilds: {} };
@@ -31,22 +38,16 @@ if (fs.existsSync(DB_FILE)) {
 }
 const save = () => fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 
-function getGuild(gid) {
-  if (!db.guilds[gid]) {
+const getGuild = gid => {
+  if (!db.guilds[gid])
     db.guilds[gid] = {
-      tracked: {},
-      daily: { channel: null, time: "21:00", lastSent: "" }
+      users: {},
+      daily: { channel: null, time: null, lastSent: null }
     };
-    save();
-  }
   return db.guilds[gid];
-}
+};
 
-// ================== HELPERS ==================
-const todayKey = () => new Date().toISOString().slice(0, 10);
-const fmt = s => `${Math.floor(s / 60)}m ${s % 60}s`;
-
-// ================== ROBLOX ==================
+// ================== ROBLOX API ==================
 async function getRobloxUser(username) {
   const r = await fetch("https://users.roblox.com/v1/usernames/users", {
     method: "POST",
@@ -64,7 +65,7 @@ async function getPresence(id) {
     body: JSON.stringify({ userIds: [id] })
   });
   const j = await r.json();
-  return j.userPresences?.[0];
+  return j.userPresences?.[0] || null;
 }
 
 // ================== CLIENT ==================
@@ -77,30 +78,26 @@ async function loop() {
   for (const gid in db.guilds) {
     const g = getGuild(gid);
 
-    for (const uid in g.tracked) {
-      const u = g.tracked[uid];
+    for (const uid in g.users) {
+      const u = g.users[uid];
       const presence = await getPresence(u.robloxId);
       const now = Date.now();
 
-      // Daily reset
-      if (u.op.day !== todayKey()) {
-        u.op.day = todayKey();
+      // Daily reset (IST)
+      if (u.op.day !== dayKey()) {
+        u.op.day = dayKey();
         u.op.today = 0;
       }
 
-      // Join
-      if (presence?.userPresenceType === 2 && u.state !== "ingame") {
-        u.state = "ingame";
+      // JOIN (silent)
+      if (presence?.userPresenceType === 2 && !u.join) {
         u.join = now;
-        save();
       }
 
-      // Leave
-      if (u.state === "ingame" && presence?.userPresenceType !== 2) {
+      // LEAVE (silent)
+      if (u.join && (!presence || presence.userPresenceType !== 2)) {
         const played = Math.floor((now - u.join) / 1000);
-
-        u.stats.daily += played;
-        u.stats.total += played;
+        u.join = null;
 
         // OP SYSTEM (SAFE)
         u.op.unused += played;
@@ -113,8 +110,6 @@ async function loop() {
           u.op.unused -= allowed * 600;
         }
 
-        u.state = "offline";
-        u.join = null;
         save();
       }
     }
@@ -123,33 +118,34 @@ async function loop() {
 
 // ================== DAILY REPORT ==================
 async function dailyReport() {
-  const now = new Date();
-  const hm = `${now.getHours()}:${now.getMinutes().toString().padStart(2, "0")}`;
-  const today = todayKey();
+  const now = istNow();
+  const hhmm = now.toTimeString().slice(0, 5);
 
   for (const gid in db.guilds) {
     const g = getGuild(gid);
-    if (!g.daily.channel || g.daily.lastSent === today) continue;
-    if (hm !== g.daily.time) continue;
+    if (!g.daily.channel || g.daily.time !== hhmm) continue;
+    if (g.daily.lastSent === dayKey()) continue;
 
-    const lines = Object.values(g.tracked)
-      .map(u => `**${u.name}** → ${u.op.today} OP`)
-      .join("\n");
+    const list = Object.values(g.users)
+      .sort((a, b) => b.op.today - a.op.today)
+      .map(u => `**${u.username}** → ${u.op.today} OP`)
+      .join("\n") || "No data";
 
     const ch = await client.channels.fetch(g.daily.channel).catch(() => null);
     if (!ch) continue;
 
-    await ch.send({
+    ch.send({
       embeds: [
         new EmbedBuilder()
           .setTitle("📊 Daily OP Report")
-          .setDescription(lines || "No activity")
+          .setDescription(list)
           .setColor(0x2ecc71)
+          .setFooter({ text: "Timezone: IST" })
           .setTimestamp()
       ]
     });
 
-    g.daily.lastSent = today;
+    g.daily.lastSent = dayKey();
     save();
   }
 }
@@ -159,51 +155,31 @@ const commands = [
   new SlashCommandBuilder()
     .setName("add")
     .setDescription("Track a Roblox user")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Discord user to track")
-       .setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName("username")
-       .setDescription("Roblox username")
-       .setRequired(true)
-    ),
+    .addUserOption(o => o.setName("user").setRequired(true))
+    .addStringOption(o => o.setName("username").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("Discord user to remove")
-       .setRequired(true)
-    ),
+    .addUserOption(o => o.setName("user").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("Show OP stats")
-    .addUserOption(o =>
-      o.setName("user")
-       .setDescription("User to check")
-       .setRequired(false)
-    ),
+    .addUserOption(o => o.setName("user")),
+
+  new SlashCommandBuilder()
+    .setName("leaderboard")
+    .setDescription("OP leaderboard"),
 
   new SlashCommandBuilder()
     .setName("setdaily")
     .setDescription("Set daily OP report")
-    .addChannelOption(o =>
-      o.setName("channel")
-       .setDescription("Channel for daily OP report")
-       .setRequired(true)
-    )
+    .addChannelOption(o => o.setName("channel").setRequired(true))
     .addStringOption(o =>
-      o.setName("time")
-       .setDescription("Time in HH:MM (24h)")
-       .setRequired(true)
+      o.setName("time").setDescription("HH:MM (24h IST)").setRequired(true)
     )
-];
-
-const commandsJSON = commands.map(c => c.toJSON());
+].map(c => c.toJSON());
 
 // ================== REGISTER ==================
 const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -226,43 +202,56 @@ client.on("interactionCreate", async i => {
   const g = getGuild(i.guildId);
 
   if (i.commandName === "add") {
-    const user = i.options.getUser("user");
+    const u = i.options.getUser("user");
     const rbx = await getRobloxUser(i.options.getString("username"));
-    if (!rbx) return i.reply("Roblox user not found");
+    if (!rbx) return i.reply({ content: "Roblox user not found", ephemeral: true });
 
-    g.tracked[user.id] = {
-      name: rbx.name,
+    g.users[u.id] = {
       robloxId: rbx.id,
-      state: "offline",
+      username: rbx.name,
       join: null,
-      stats: { daily: 0, total: 0 },
-      op: { total: 0, today: 0, unused: 0, day: todayKey() }
+      op: { total: 0, today: 0, unused: 0, day: dayKey() }
     };
     save();
     return i.reply("✅ User tracked");
   }
 
   if (i.commandName === "remove") {
-    delete g.tracked[i.options.getUser("user").id];
+    delete g.users[i.options.getUser("user").id];
     save();
     return i.reply("❌ Removed");
   }
 
   if (i.commandName === "stats") {
-    const u = g.tracked[i.options.getUser("user").id];
-    if (!u) return i.reply("Not tracked");
+    const u = i.options.getUser("user") || i.user;
+    const d = g.users[u.id];
+    if (!d) return i.reply("Not tracked");
 
     return i.reply({
       embeds: [
         new EmbedBuilder()
-          .setTitle(u.name)
+          .setTitle(d.username)
           .setDescription(
-            `🪙 Total OP: **${u.op.total}**\n` +
-            `📅 Today: **${u.op.today}/50**\n\n` +
-            `⏱ Daily: ${fmt(u.stats.daily)}\n` +
-            `🏆 Total: ${fmt(u.stats.total)}`
+            `Total OP: **${d.op.total}**\nToday: **${d.op.today}/50**`
           )
           .setColor(0x3498db)
+      ]
+    });
+  }
+
+  if (i.commandName === "leaderboard") {
+    const lb = Object.values(g.users)
+      .sort((a, b) => b.op.total - a.op.total)
+      .slice(0, 10)
+      .map((u, i) => `**${i + 1}.** ${u.username} — ${u.op.total}`)
+      .join("\n") || "No data";
+
+    return i.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🏆 OP Leaderboard")
+          .setDescription(lb)
+          .setColor(0xf1c40f)
       ]
     });
   }
@@ -270,9 +259,8 @@ client.on("interactionCreate", async i => {
   if (i.commandName === "setdaily") {
     g.daily.channel = i.options.getChannel("channel").id;
     g.daily.time = i.options.getString("time");
-    g.daily.lastSent = "";
     save();
-    return i.reply("✅ Daily report configured");
+    return i.reply("✅ Daily report configured (IST)");
   }
 });
 
