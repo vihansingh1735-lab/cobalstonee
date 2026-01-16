@@ -1,314 +1,259 @@
-// ===================== IMPORTS =====================
+// ================== KEEPALIVE ==================
+const express = require("express");
+const app = express();
+app.get("/", (_, res) => res.send("Bot alive"));
+app.listen(process.env.PORT || 3000);
+
+// ================== IMPORTS ==================
 const {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
+  PermissionsBitField,
   REST,
   Routes,
   EmbedBuilder,
   ActivityType
 } = require("discord.js");
 
-const mongoose = require("mongoose");
-const express = require("express");
+const fs = require("fs");
 const fetch = require("node-fetch");
 
-// ===================== CONFIG =====================
+// ================== CONFIG ==================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const MONGO_URI = process.env.MONGO_URI;
-const PORT = process.env.PORT || 3000;
+const OWNER_ID = process.env.OWNER_ID;
 
-const USERNAME_ROLE_ID = "1460937724142813344";
+const CHECK_INTERVAL = 30_000;
+const DB_FILE = "./data.json";
 
-// ===================== FAKE WEB SERVER =====================
-const app = express();
-app.get("/", (_, res) => res.send("Bot alive"));
-app.listen(PORT, () => console.log(`🌐 Web running on ${PORT}`));
+// ================== HELPERS ==================
+const fmt = s => `${Math.floor(s / 60)}m ${s % 60}s`;
+const dayKey = () => new Date().toDateString();
+const weekKey = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-W${Math.ceil(
+    ((d - new Date(d.getFullYear(), 0, 1)) / 86400000 +
+      new Date(d.getFullYear(), 0, 1).getDay() + 1) / 7
+  )}`;
+};
+const isOwner = id => id === OWNER_ID;
 
-// ===================== MONGODB =====================
-mongoose.connect(MONGO_URI, {
-  dbName: "opsbot"
-})
-.then(() => console.log("✅ MongoDB connected"))
-.catch(err => {
-  console.error("❌ MongoDB error", err);
-  process.exit(1);
-});
+// ================== DATABASE ==================
+let data = { guilds: {} };
+if (fs.existsSync(DB_FILE)) {
+  try {
+    data = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
+  } catch {
+    data = { guilds: {} };
+  }
+}
+const save = () =>
+  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 
-// ===================== SCHEMAS =====================
-const userSchema = new mongoose.Schema({
-  guildId: String,
-  discordId: String,
+function getGuild(guildId) {
+  if (!data.guilds[guildId]) {
+    data.guilds[guildId] = { tracked: {} };
+    save();
+  }
+  return data.guilds[guildId];
+}
 
-  robloxId: Number,
-  robloxUsername: String,
+// ================== ROBLOX API ==================
+async function getRobloxUser(username) {
+  const r = await fetch("https://users.roblox.com/v1/usernames/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ usernames: [username] })
+  });
+  const j = await r.json();
+  return j.data?.[0] || null;
+}
 
-  // 🔥 TIME TRACKING
-  sessionStart: Date,
-  totalMinutes: { type: Number, default: 0 },
-  rewardedMinutes: { type: Number, default: 0 },
+async function getPresence(id) {
+  const r = await fetch("https://presence.roblox.com/v1/presence/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userIds: [id] })
+  });
+  const j = await r.json();
+  return j.userPresences?.[0] || null;
+}
 
-  // 🔥 OP SYSTEM
-  op: { type: Number, default: 0 },
-  todayCount: { type: Number, default: 0 },
-  lastDay: String
-});
+async function getAvatar(id) {
+  const r = await fetch(
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${id}&size=420x420&format=Png`
+  );
+  const j = await r.json();
+  return j.data?.[0]?.imageUrl;
+}
 
-const settingsSchema = new mongoose.Schema({
-  guildId: String,
-  resultsChannel: String
-});
-
-const User = mongoose.model("User", userSchema);
-const Settings = mongoose.model("Settings", settingsSchema);
-
-// ===================== DISCORD CLIENT =====================
+// ================== CLIENT ==================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildPresences,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMessages
   ]
 });
 
-// ===================== HELPERS =====================
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
-}
+// ================== PRESENCE LOOP ==================
+async function checkUsers() {
+  for (const guildId in data.guilds) {
+    const guild = getGuild(guildId);
 
-// ===================== ROBLOX API =====================
-async function getRobloxUser(username) {
-  const res = await fetch("https://users.roblox.com/v1/usernames/users", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      usernames: [username],
-      excludeBannedUsers: false
-    })
-  });
+    for (const did in guild.tracked) {
+      const u = guild.tracked[did];
+      const presence = await getPresence(u.robloxId);
+      const channel = await client.channels.fetch(u.channelId).catch(() => null);
+      if (!channel) continue;
 
-  const data = await res.json();
-  return data.data?.[0] || null;
-}
+      const now = Date.now();
 
-// ===================== PRESENCE TRACKING =====================
-client.on("presenceUpdate", async (_, presence) => {
-  if (!presence?.guild || !presence.userId) return;
+      // DAILY RESET
+      if (u.op.day !== dayKey()) {
+        u.op.day = dayKey();
+        u.op.today = 0;
+      }
 
-  const playing = presence.activities.some(a => a.type === 0);
-  const user = await User.findOne({
-    guildId: presence.guild.id,
-    discordId: presence.userId
-  });
+      // ================= JOIN =================
+      if (presence?.userPresenceType === 2 && u.state !== "ingame") {
+        u.state = "ingame";
+        u.join = now;
+        u.game = presence.lastLocation || "Roblox";
+        save();
 
-  if (!user) return;
+        channel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x2ecc71)
+              .setTitle(u.displayName)
+              .setURL(`https://www.roblox.com/users/${u.robloxId}/profile`)
+              .setThumbnail(await getAvatar(u.robloxId))
+              .setDescription(`🟢 **Joined Game**\n🎮 ${u.game}`)
+              .setTimestamp()
+          ]
+        });
+      }
 
-  // 🟢 START SESSION
-  if (playing && !user.sessionStart) {
-    user.sessionStart = new Date();
-    await user.save();
-  }
+      // ================= LEAVE =================
+      if (u.state === "ingame" && (!presence || presence.userPresenceType !== 2)) {
+        const playedSeconds = Math.floor((now - u.join) / 1000);
 
-  // 🔴 END SESSION
-  if (!playing && user.sessionStart) {
-    const minutes = Math.floor(
-      (Date.now() - user.sessionStart.getTime()) / 60000
-    );
+        // add time
+        u.stats.daily += playedSeconds;
+        u.stats.weekly += playedSeconds;
+        u.stats.total += playedSeconds;
 
-    if (minutes > 0) {
-      user.totalMinutes += minutes;
+        // OP SYSTEM (SAFE)
+        u.op.unusedSeconds += playedSeconds;
+        let earned = Math.floor(u.op.unusedSeconds / 600);
+        const allowed = Math.min(earned, 50 - u.op.today);
+
+        if (allowed > 0) {
+          u.op.total += allowed;
+          u.op.today += allowed;
+          u.op.unusedSeconds -= allowed * 600;
+        }
+
+        u.state = "offline";
+        u.join = null;
+        u.game = null;
+        save();
+
+        channel.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0xe74c3c)
+              .setTitle(u.displayName)
+              .setURL(`https://www.roblox.com/users/${u.robloxId}/profile`)
+              .setThumbnail(await getAvatar(u.robloxId))
+              .setDescription(
+                `🔴 **Left Game**\n⏱ ${fmt(playedSeconds)}\n\n🪙 **Total OP:** ${u.op.total}\n📅 **Today:** ${u.op.today}/50`
+              )
+              .setTimestamp()
+          ]
+        });
+      }
     }
-
-    user.sessionStart = null;
-    await user.save();
-  }
-});
-
-// ===================== OP REWARD SYSTEM =====================
-async function rewardOP() {
-  const today = todayKey();
-  const users = await User.find();
-
-  for (const u of users) {
-    // Reset daily limit
-    if (u.lastDay !== today) {
-      u.todayCount = 0;
-      u.lastDay = today;
-    }
-
-    // Calculate new playable minutes
-    const newMinutes = u.totalMinutes - u.rewardedMinutes;
-    if (newMinutes < 10) continue;
-
-    const possibleOP = Math.floor(newMinutes / 10);
-    if (possibleOP <= 0) continue;
-
-    const allowedOP = Math.min(possibleOP, 50 - u.todayCount);
-    if (allowedOP <= 0) continue;
-
-    u.op += allowedOP;
-    u.todayCount += allowedOP;
-    u.rewardedMinutes += allowedOP * 10;
-
-    await u.save();
   }
 }
 
-// ⏱ Check every minute (SAFE)
-setInterval(rewardOP, 60 * 1000);
-
-// ===================== DAILY REPORT =====================
-async function sendDailyResults() {
-  const guilds = await Settings.find();
-
-  for (const g of guilds) {
-    const users = await User.find({ guildId: g.guildId });
-    if (!users.length) continue;
-
-    const desc = users
-      .map(u => `**${u.robloxUsername}** → ${u.todayCount} OP`)
-      .join("\n");
-
-    const embed = new EmbedBuilder()
-      .setTitle("📊 Daily Operations Report")
-      .setDescription(desc)
-      .setColor(0x2ecc71)
-      .setTimestamp();
-
-    const channel = await client.channels.fetch(g.resultsChannel).catch(() => null);
-    if (channel) channel.send({ embeds: [embed] });
-  }
-}
-
-// 🕛 Daily
-setInterval(sendDailyResults, 24 * 60 * 60 * 1000);
-
-// ===================== COMMANDS =====================
+// ================== COMMANDS ==================
 const commands = [
   new SlashCommandBuilder()
     .setName("add")
     .setDescription("Track a Roblox user")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Discord user").setRequired(true))
-    .addStringOption(o =>
-      o.setName("username").setDescription("Roblox username").setRequired(true)),
+    .addUserOption(o => o.setName("user").setRequired(true))
+    .addStringOption(o => o.setName("username").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Discord user").setRequired(true)),
+    .addUserOption(o => o.setName("user").setRequired(true)),
 
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("Show OP stats")
-    .addUserOption(o =>
-      o.setName("user").setDescription("Target user")),
+    .addUserOption(o => o.setName("user")),
 
   new SlashCommandBuilder()
-    .setName("setresults")
-    .setDescription("Set daily results channel")
-    .addChannelOption(o =>
-      o.setName("channel").setDescription("Channel").setRequired(true)),
-
-  new SlashCommandBuilder()
-    .setName("username")
-    .setDescription("Lookup Roblox user")
-    .addStringOption(o =>
-      o.setName("username").setDescription("Roblox username").setRequired(true))
+    .setName("leaderboard")
+    .setDescription("OP leaderboard")
 ].map(c => c.toJSON());
 
-// ===================== REGISTER =====================
+// ================== REGISTER ==================
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 (async () => {
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-  console.log("✅ Slash commands registered");
 })();
 
-// ===================== READY =====================
+// ================== READY ==================
 client.once("ready", () => {
-  console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log(`Logged in as ${client.user.tag}`);
   client.user.setActivity("OP Tracker", { type: ActivityType.Watching });
+  setInterval(checkUsers, CHECK_INTERVAL);
 });
 
-// ===================== INTERACTIONS =====================
+// ================== INTERACTIONS ==================
 client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand()) return;
-
-  const guildId = i.guildId;
+  const guild = getGuild(i.guildId);
 
   if (i.commandName === "add") {
-    const user = i.options.getUser("user");
-    const name = i.options.getString("username");
+    const target = i.options.getUser("user");
+    const rbx = await getRobloxUser(i.options.getString("username"));
+    if (!rbx) return i.reply("User not found");
 
-    const rbx = await getRobloxUser(name);
-    if (!rbx) return i.reply({ content: "Roblox user not found", ephemeral: true });
-
-    await User.findOneAndUpdate(
-      { guildId, discordId: user.id },
-      {
-        guildId,
-        discordId: user.id,
-        robloxId: rbx.id,
-        robloxUsername: rbx.name,
-        lastDay: todayKey()
-      },
-      { upsert: true }
-    );
-
-    i.reply(`✅ Tracking **${rbx.name}**`);
-  }
-
-  if (i.commandName === "remove") {
-    const user = i.options.getUser("user");
-    await User.deleteOne({ guildId, discordId: user.id });
-    i.reply("❌ Removed");
+    guild.tracked[target.id] = {
+      robloxId: rbx.id,
+      displayName: rbx.name,
+      channelId: i.channelId,
+      state: "offline",
+      join: null,
+      game: null,
+      stats: { daily: 0, weekly: 0, total: 0 },
+      op: { total: 0, today: 0, day: dayKey(), unusedSeconds: 0 }
+    };
+    save();
+    i.reply("✅ User tracked");
   }
 
   if (i.commandName === "stats") {
     const user = i.options.getUser("user") || i.user;
-    const data = await User.findOne({ guildId, discordId: user.id });
-    if (!data) return i.reply("No data");
+    const u = guild.tracked[user.id];
+    if (!u) return i.reply("Not tracked");
 
-    const embed = new EmbedBuilder()
-      .setTitle(data.robloxUsername)
-      .setURL(`https://www.roblox.com/users/${data.robloxId}/profile`)
-      .setDescription(
-        `Total OP: **${data.op}**\nToday: **${data.todayCount}/50**`
-      )
-      .setColor(0x3498db);
-
-    i.reply({ embeds: [embed] });
-  }
-
-  if (i.commandName === "setresults") {
-    const channel = i.options.getChannel("channel");
-    await Settings.findOneAndUpdate(
-      { guildId },
-      { guildId, resultsChannel: channel.id },
-      { upsert: true }
-    );
-    i.reply("✅ Results channel set");
-  }
-
-  if (i.commandName === "username") {
-    if (!i.member.roles.cache.has(USERNAME_ROLE_ID))
-      return i.reply({ content: "No permission", ephemeral: true });
-
-    const name = i.options.getString("username");
-    const rbx = await getRobloxUser(name);
-    if (!rbx) return i.reply("Not found");
-
-    const embed = new EmbedBuilder()
-      .setTitle(rbx.name)
-      .setURL(`https://www.roblox.com/users/${rbx.id}/profile`)
-      .setDescription(`User ID: ${rbx.id}`)
-      .setColor(0xf1c40f);
-
-    i.reply({ embeds: [embed] });
+    i.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(u.displayName)
+          .setDescription(
+            `🪙 Total OP: **${u.op.total}**\n📅 Today: **${u.op.today}/50**`
+          )
+      ]
+    });
   }
 });
 
-// ===================== LOGIN =====================
+// ================== LOGIN ==================
 client.login(TOKEN);
