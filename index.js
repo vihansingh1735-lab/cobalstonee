@@ -173,12 +173,20 @@ const commands = [
     .addUserOption(o => o.setName("user").setRequired(true)),
 
   new SlashCommandBuilder()
-    .setName("setdaily")
-    .setDescription("Set daily OP report")
-    .addChannelOption(o => o.setName("channel").setRequired(true))
-    .addStringOption(o =>
-      o.setName("time").setDescription("HH:MM 24h").setRequired(true)
-    )
+  .setName("setdaily")
+  .setDescription("Set daily OP report")
+  .addChannelOption(o =>
+    o
+      .setName("channel")
+      .setDescription("Channel for daily OP report")
+      .setRequired(true)
+  )
+  .addStringOption(o =>
+    o
+      .setName("time")
+      .setDescription("Time in HH:MM (24h)")
+      .setRequired(true)
+  )
 ].map(c => c.toJSON());
 
 // ================== REGISTER ==================
