@@ -155,18 +155,38 @@ const commands = [
   new SlashCommandBuilder()
     .setName("add")
     .setDescription("Track a Roblox user")
-    .addUserOption(o => o.setName("user").setRequired(true))
-    .addStringOption(o => o.setName("username").setRequired(true)),
+    .addUserOption(o =>
+      o
+        .setName("user")
+        .setDescription("Discord user to track")
+        .setRequired(true)
+    )
+    .addStringOption(o =>
+      o
+        .setName("username")
+        .setDescription("Roblox username")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
-    .addUserOption(o => o.setName("user").setRequired(true)),
+    .addUserOption(o =>
+      o
+        .setName("user")
+        .setDescription("User to remove")
+        .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("Show OP stats")
-    .addUserOption(o => o.setName("user")),
+    .addUserOption(o =>
+      o
+        .setName("user")
+        .setDescription("Target user")
+        .setRequired(false)
+    ),
 
   new SlashCommandBuilder()
     .setName("leaderboard")
@@ -175,12 +195,19 @@ const commands = [
   new SlashCommandBuilder()
     .setName("setdaily")
     .setDescription("Set daily OP report")
-    .addChannelOption(o => o.setName("channel").setRequired(true))
+    .addChannelOption(o =>
+      o
+        .setName("channel")
+        .setDescription("Channel for daily report")
+        .setRequired(true)
+    )
     .addStringOption(o =>
-      o.setName("time").setDescription("HH:MM (24h IST)").setRequired(true)
+      o
+        .setName("time")
+        .setDescription("Time in HH:MM (24h IST)")
+        .setRequired(true)
     )
 ].map(c => c.toJSON());
-
 // ================== REGISTER ==================
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 (async () => {
