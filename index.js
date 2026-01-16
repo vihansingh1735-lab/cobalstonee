@@ -159,35 +159,51 @@ const commands = [
   new SlashCommandBuilder()
     .setName("add")
     .setDescription("Track a Roblox user")
-    .addUserOption(o => o.setName("user").setRequired(true))
-    .addStringOption(o => o.setName("username").setRequired(true)),
+    .addUserOption(o =>
+      o.setName("user")
+       .setDescription("Discord user to track")
+       .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("username")
+       .setDescription("Roblox username")
+       .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("remove")
     .setDescription("Remove tracked user")
-    .addUserOption(o => o.setName("user").setRequired(true)),
+    .addUserOption(o =>
+      o.setName("user")
+       .setDescription("Discord user to remove")
+       .setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("stats")
     .setDescription("Show OP stats")
-    .addUserOption(o => o.setName("user").setRequired(true)),
+    .addUserOption(o =>
+      o.setName("user")
+       .setDescription("User to check")
+       .setRequired(false)
+    ),
 
   new SlashCommandBuilder()
-  .setName("setdaily")
-  .setDescription("Set daily OP report")
-  .addChannelOption(o =>
-    o
-      .setName("channel")
-      .setDescription("Channel for daily OP report")
-      .setRequired(true)
-  )
-  .addStringOption(o =>
-    o
-      .setName("time")
-      .setDescription("Time in HH:MM (24h)")
-      .setRequired(true)
-  )
-].map(c => c.toJSON());
+    .setName("setdaily")
+    .setDescription("Set daily OP report")
+    .addChannelOption(o =>
+      o.setName("channel")
+       .setDescription("Channel for daily OP report")
+       .setRequired(true)
+    )
+    .addStringOption(o =>
+      o.setName("time")
+       .setDescription("Time in HH:MM (24h)")
+       .setRequired(true)
+    )
+];
+
+const commandsJSON = commands.map(c => c.toJSON());
 
 // ================== REGISTER ==================
 const rest = new REST({ version: "10" }).setToken(TOKEN);
